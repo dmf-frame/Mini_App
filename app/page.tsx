@@ -294,10 +294,10 @@ function Web3AppPageContent() {
   };
 
   // Transaction receipts
-  const { isLoading: isConfirmingBuy, isSuccess: isBuySuccess } = useWaitForTransactionReceipt({ hash: buyHash });
+  const { isLoading: isConfirmingBuy, isSuccess: isBuySuccess, isError: isBuyError } = useWaitForTransactionReceipt({ hash: buyHash });
   const { isLoading: isConfirmingApprove, isSuccess: isApproveSuccess } = useWaitForTransactionReceipt({ hash: approveHash });
-  const { isLoading: isConfirmingClaim, isSuccess: isClaimSuccess } = useWaitForTransactionReceipt({ hash: claimHash });
-  const { isLoading: isConfirmingRefund, isSuccess: isRefundSuccess } = useWaitForTransactionReceipt({ hash: refundHash });
+  const { isLoading: isConfirmingClaim, isSuccess: isClaimSuccess, isError: isClaimError } = useWaitForTransactionReceipt({ hash: claimHash });
+  const { isLoading: isConfirmingRefund, isSuccess: isRefundSuccess, isError: isRefundError } = useWaitForTransactionReceipt({ hash: refundHash });
 
   // Auto-buy after approval is confirmed
   useEffect(() => {
@@ -558,9 +558,25 @@ function Web3AppPageContent() {
         functionName: "buy",
         value: tokenAmount, // Native USDC sent via msg.value
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error("Buy error:", error);
       pendingBuyAmountRef.current = null; // Reset on error
+      // Immediately reset amount field and button state
+      setBuyAmount("");
+      setEstimatedTokens(null);
+      // Check if it's a user rejection (MetaMask cancellation)
+      const isUserRejection = error?.code === 4001 || 
+                             error?.code === 'ACTION_REJECTED' || 
+                             error?.message?.includes('rejected') ||
+                             error?.message?.includes('User rejected');
+      // For both cancellation and errors, show failed status for 2 seconds
+      // Keep activeTransactionType so failed button can display
+      setTxStatus(prev => ({ ...prev, buy: 'failed' }));
+      // Clear activeTransactionType after 2 seconds
+      setTimeout(() => {
+        setActiveTransactionType(null);
+        setTxStatus(prev => ({ ...prev, buy: null }));
+      }, 2000);
     }
   };
 
@@ -584,10 +600,17 @@ function Web3AppPageContent() {
         functionName: "claimDividends",
         args: [],
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error("Claim error:", error);
-      setActiveTransactionType(null);
-      setActiveClaimToken(null);
+      // For both cancellation and errors, show failed status for 2 seconds
+      // Keep activeTransactionType so failed button can display
+      setTxStatus(prev => ({ ...prev, claim: 'failed' }));
+      // Clear activeTransactionType after 2 seconds
+      setTimeout(() => {
+        setActiveTransactionType(null);
+        setActiveClaimToken(null);
+        setTxStatus(prev => ({ ...prev, claim: null }));
+      }, 2000);
     }
   };
 
@@ -616,8 +639,19 @@ function Web3AppPageContent() {
         functionName: "transfer",
         args: [contractAddress, tokenAmount],
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error("Refund error:", error);
+      // Immediately reset amount field and button state
+      setRefundAmount("");
+      setEstimatedUsdt(null);
+      // For both cancellation and errors, show failed status for 2 seconds
+      // Keep activeTransactionType so failed button can display
+      setTxStatus(prev => ({ ...prev, refund: 'failed' }));
+      // Clear activeTransactionType after 2 seconds
+      setTimeout(() => {
+        setActiveTransactionType(null);
+        setTxStatus(prev => ({ ...prev, refund: null }));
+      }, 2000);
     }
   };
 
@@ -669,6 +703,80 @@ function Web3AppPageContent() {
 
   const [activeTransactionType, setActiveTransactionType] = useState<'buy' | 'refund' | 'claim' | null>(null);
   const [activeClaimToken, setActiveClaimToken] = useState<'dmfUSD' | 'dmfEUR' | null>(null);
+  
+  // Transaction status tracking with delay
+  const [txStatus, setTxStatus] = useState<{
+    buy: 'pending' | 'success' | 'failed' | null;
+    claim: 'pending' | 'success' | 'failed' | null;
+    refund: 'pending' | 'success' | 'failed' | null;
+  }>({
+    buy: null,
+    claim: null,
+    refund: null,
+  });
+
+  // Track transaction status with 1-2 second delay
+  useEffect(() => {
+    if (isBuySuccess && buyHash) {
+      // Wait 1-2 seconds before showing success status
+      const timeoutId = setTimeout(() => {
+        setTxStatus(prev => ({ ...prev, buy: 'success' }));
+      }, 1500);
+      return () => clearTimeout(timeoutId);
+    } else if (isBuyError && buyHash) {
+      // Immediately reset amount field and button state
+      setBuyAmount("");
+      setEstimatedTokens(null);
+      // Set failed status immediately to stop loading spinner, but keep activeTransactionType for button display
+      setTxStatus(prev => ({ ...prev, buy: 'failed' }));
+      // Clear activeTransactionType and status after 2 seconds
+      const timeoutId = setTimeout(() => {
+        setActiveTransactionType(null);
+        setTxStatus(prev => ({ ...prev, buy: null }));
+      }, 2000);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [isBuySuccess, isBuyError, buyHash]);
+
+  useEffect(() => {
+    if (isClaimSuccess && claimHash) {
+      const timeoutId = setTimeout(() => {
+        setTxStatus(prev => ({ ...prev, claim: 'success' }));
+      }, 1500);
+      return () => clearTimeout(timeoutId);
+    } else if (isClaimError && claimHash) {
+      // Set failed status immediately to stop loading spinner, but keep activeTransactionType for button display
+      setTxStatus(prev => ({ ...prev, claim: 'failed' }));
+      // Clear activeTransactionType and status after 2 seconds
+      const timeoutId = setTimeout(() => {
+        setActiveTransactionType(null);
+        setActiveClaimToken(null);
+        setTxStatus(prev => ({ ...prev, claim: null }));
+      }, 2000);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [isClaimSuccess, isClaimError, claimHash]);
+
+  useEffect(() => {
+    if (isRefundSuccess && refundHash) {
+      const timeoutId = setTimeout(() => {
+        setTxStatus(prev => ({ ...prev, refund: 'success' }));
+      }, 1500);
+      return () => clearTimeout(timeoutId);
+    } else if (isRefundError && refundHash) {
+      // Immediately reset amount field and button state
+      setRefundAmount("");
+      setEstimatedUsdt(null);
+      // Set failed status immediately to stop loading spinner, but keep activeTransactionType for button display
+      setTxStatus(prev => ({ ...prev, refund: 'failed' }));
+      // Clear activeTransactionType and status after 2 seconds
+      const timeoutId = setTimeout(() => {
+        setActiveTransactionType(null);
+        setTxStatus(prev => ({ ...prev, refund: null }));
+      }, 2000);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [isRefundSuccess, isRefundError, refundHash]);
 
   // Reset active transaction type when transaction completes
   useEffect(() => {
@@ -680,6 +788,50 @@ function Web3AppPageContent() {
       return () => clearTimeout(timer);
     }
   }, [isBuySuccess, isRefundSuccess, isClaimSuccess, activeTransactionType]);
+
+  // Detect user cancellation: when isPending becomes false without a hash
+  useEffect(() => {
+    if (activeTransactionType === 'buy' && !isBuying && !isApproving && !isConfirmingBuy && !isConfirmingApprove && !buyHash && txStatus.buy !== 'failed') {
+      // User cancelled - no hash was generated
+      // Immediately reset amount field
+      setBuyAmount("");
+      setEstimatedTokens(null);
+      // Show failed status for 2 seconds
+      setTxStatus(prev => ({ ...prev, buy: 'failed' }));
+      setTimeout(() => {
+        setActiveTransactionType(null);
+        setTxStatus(prev => ({ ...prev, buy: null }));
+      }, 2000);
+    }
+  }, [isBuying, isApproving, isConfirmingBuy, isConfirmingApprove, buyHash, activeTransactionType, txStatus.buy]);
+
+  useEffect(() => {
+    if (activeTransactionType === 'claim' && !isClaiming && !isConfirmingClaim && !claimHash && txStatus.claim !== 'failed') {
+      // User cancelled - no hash was generated
+      // Show failed status for 2 seconds
+      setTxStatus(prev => ({ ...prev, claim: 'failed' }));
+      setTimeout(() => {
+        setActiveTransactionType(null);
+        setActiveClaimToken(null);
+        setTxStatus(prev => ({ ...prev, claim: null }));
+      }, 2000);
+    }
+  }, [isClaiming, isConfirmingClaim, claimHash, activeTransactionType, txStatus.claim]);
+
+  useEffect(() => {
+    if (activeTransactionType === 'refund' && !isRefunding && !isConfirmingRefund && !refundHash && txStatus.refund !== 'failed') {
+      // User cancelled - no hash was generated
+      // Immediately reset amount field
+      setRefundAmount("");
+      setEstimatedUsdt(null);
+      // Show failed status for 2 seconds
+      setTxStatus(prev => ({ ...prev, refund: 'failed' }));
+      setTimeout(() => {
+        setActiveTransactionType(null);
+        setTxStatus(prev => ({ ...prev, refund: null }));
+      }, 2000);
+    }
+  }, [isRefunding, isConfirmingRefund, refundHash, activeTransactionType, txStatus.refund]);
 
   const handleBuyWithTracking = async () => {
     setActiveTransactionType('buy');
@@ -1048,6 +1200,7 @@ function Web3AppPageContent() {
                       disabled={
                         !buyAmount ||
                         parseFloat(buyAmount) < 0.1 ||
+                        parseFloat(buyAmount) > parseFloat(selectedBuyToken === 'dmfUSD' ? usdtBalanceFormatted : xautBalanceFormatted) ||
                         isBuying ||
                         isConfirmingBuy ||
                         isApproving ||
@@ -1056,7 +1209,7 @@ function Web3AppPageContent() {
                       }
                       className="w-full px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center font-semibold"
                     >
-                      {(isBuying || isConfirmingBuy || isApproving || isConfirmingApprove || isAwaitingBuy || (activeTransactionType === 'buy')) ? (
+                      {(isBuying || isConfirmingBuy || isApproving || isConfirmingApprove || isAwaitingBuy || (activeTransactionType === 'buy' && txStatus.buy !== 'failed')) ? (
                         <>
                           <Loader2 className="h-5 w-5 mr-2 animate-spin" />
                           {isApproving || isConfirmingApprove ? "Approving..." : isAwaitingBuy || isConfirmingBuy ? "Confirming..." : "Buying..."}
@@ -1068,17 +1221,23 @@ function Web3AppPageContent() {
                       )}
                     </button>
                     {buyHash && activeTransactionType === 'buy' && (
-                      <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                        <p className="text-xs text-blue-800">
-                          <a
-                            href={`https://testnet.arcscan.app/tx/${buyHash}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="underline hover:text-blue-600"
+                      <div className="mt-4 space-y-2">
+                        {txStatus.buy === 'success' && (
+                          <button
+                            disabled
+                            className="w-full px-4 py-2 bg-green-200 text-green-800 rounded-lg font-semibold cursor-default"
                           >
-                            View on ArcScan
-                          </a>
-                        </p>
+                            tx succeed
+                          </button>
+                        )}
+                        {txStatus.buy === 'failed' && (
+                          <button
+                            disabled
+                            className="w-full px-4 py-2 bg-red-500 text-white rounded-lg font-semibold cursor-default"
+                          >
+                            tx failed
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
@@ -1117,7 +1276,7 @@ function Web3AppPageContent() {
                               }
                               className="px-4 py-2 text-sm bg-blue-400 text-white rounded-lg hover:bg-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center font-semibold"
                             >
-                              {(isClaiming || isConfirmingClaim) && activeTransactionType === 'claim' && activeClaimToken === token ? (
+                              {(isClaiming || isConfirmingClaim) && activeTransactionType === 'claim' && activeClaimToken === token && txStatus.claim !== 'failed' ? (
                                 <Loader2 className="h-4 w-4 animate-spin" />
                               ) : (
                                 'Claim'
@@ -1128,17 +1287,23 @@ function Web3AppPageContent() {
                       ))}
                   </div>
                   {claimHash && (
-                    <div className="mt-4 p-3 bg-blue-100 border border-blue-300 rounded-lg">
-                      <p className="text-xs text-blue-800">
-                        <a
-                          href={`https://testnet.arcscan.app/tx/${claimHash}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="underline hover:text-blue-600 font-semibold"
+                    <div className="mt-4 space-y-2">
+                      {txStatus.claim === 'success' && (
+                        <button
+                          disabled
+                          className="w-full px-4 py-2 bg-green-200 text-green-800 rounded-lg font-semibold cursor-default"
                         >
-                          View on Etherscan
-                        </a>
-                      </p>
+                          tx succeed
+                        </button>
+                      )}
+                      {txStatus.claim === 'failed' && (
+                        <button
+                          disabled
+                          className="w-full px-4 py-2 bg-red-500 text-white rounded-lg font-semibold cursor-default"
+                        >
+                          tx failed
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -1230,7 +1395,7 @@ function Web3AppPageContent() {
                       }
                       className="w-full px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center font-semibold"
                     >
-                      {(isRefunding || isConfirmingRefund || (activeTransactionType === 'refund')) ? (
+                      {(isRefunding || isConfirmingRefund || (activeTransactionType === 'refund' && txStatus.refund !== 'failed')) ? (
                         <>
                           <Loader2 className="h-5 w-5 mr-2 animate-spin" />
                           {isConfirmingRefund ? "Confirming..." : "Refunding..."}
@@ -1240,17 +1405,23 @@ function Web3AppPageContent() {
                       )}
                     </button>
                     {refundHash && activeTransactionType === 'refund' && (
-                      <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg">
-                        <p className="text-xs text-red-800">
-                          <a
-                            href={`https://testnet.arcscan.app/tx/${refundHash}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="underline hover:text-red-600"
+                      <div className="mt-4 space-y-2">
+                        {txStatus.refund === 'success' && (
+                          <button
+                            disabled
+                            className="w-full px-4 py-2 bg-green-200 text-green-800 rounded-lg font-semibold cursor-default"
                           >
-                            View on ArcScan
-                          </a>
-                        </p>
+                            tx succeed
+                          </button>
+                        )}
+                        {txStatus.refund === 'failed' && (
+                          <button
+                            disabled
+                            className="w-full px-4 py-2 bg-red-500 text-white rounded-lg font-semibold cursor-default"
+                          >
+                            tx failed
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
