@@ -242,7 +242,7 @@ async function getTokenData(contractAddress: string, reserveContractAddress: str
 
         // Sum up Buy volume (usdcPaid/eurcPaid)
         let buyVolume = BigInt(0);
-        for (const event of buyEvents) {
+        for (const event of buyEvents as any[]) {
           if (event.args) {
             // Buy event structure: Buy(address indexed buyer, uint256 usdcPaid/eurcPaid, uint256 tokensReceived)
             // viem returns args as an object with named properties or as an array
@@ -360,4 +360,5 @@ export async function GET(request: Request) {
     cached: false,
   });
 }
+
 
