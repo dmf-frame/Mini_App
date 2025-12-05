@@ -130,10 +130,10 @@ export const dmfUSD_ABI = [
   },
   // Write functions
   {
-    inputs: [],
+    inputs: [{ internalType: 'uint256', name: 'usdcAmount', type: 'uint256' }],
     name: 'buy',
     outputs: [],
-    stateMutability: 'payable',
+    stateMutability: 'nonpayable',
     type: 'function',
   },
   {

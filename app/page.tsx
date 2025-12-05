@@ -42,19 +42,18 @@ function Web3AppPageContent() {
     disconnect();
   };
 
-  // Balances
-  const { data: ethBalance } = useBalance({
-    address,
-    chainId: arcTestnet.id,
-    query: {
-      enabled: !!address && isConnected,
-      staleTime: 20 * 1000, // Cache for 20 seconds
+  // ERC-20 USDC balance - use USDC contract address
+  const { data: usdcBalance, refetch: refetchUsdcBalance } = useReadContract({
+    address: USDC_CONTRACT,
+    abi: ERC20_ABI,
+    functionName: "balanceOf",
+    args: address ? [address] : undefined,
+    query: { 
+      enabled: !!address && isConnected, 
       refetchInterval: isConnected ? 30000 : false, // Auto-update every 30 seconds when connected
+      staleTime: 20 * 1000,
     },
   });
-
-  // USDC is native on ARC Testnet, so use useBalance instead of useReadContract
-  // usdtBalance will be derived from ethBalance (native USDC)
 
   const { data: gusdtBalance, refetch: refetchGusdtBalance } = useReadContract({
     address: dmfUSD_CONTRACT,
@@ -114,8 +113,16 @@ function Web3AppPageContent() {
     },
   });
 
-  // USDC is native on ARC Testnet (18 decimals), no need to fetch decimals
-  const usdtDecimals = 18; // Native USDC on ARC uses 18 decimals
+  // USDC decimals - contract constant (ERC-20 USDC uses 6 decimals)
+  const { data: usdcDecimals } = useReadContract({
+    address: USDC_CONTRACT,
+    abi: ERC20_ABI,
+    functionName: "decimals",
+    query: { 
+      staleTime: Infinity, // Decimals never change
+      refetchInterval: false,
+    },
+  });
 
   // EURC balance - use EURC contract address
   const { data: xautBalance, refetch: refetchXautBalance } = useReadContract({
@@ -143,8 +150,8 @@ function Web3AppPageContent() {
     },
   });
 
-  // EURC decimals - contract constant
-  const { data: usdcDecimals } = useReadContract({
+  // EURC decimals - contract constant (same as USDC, both use 6 decimals)
+  const { data: eurcDecimals } = useReadContract({
     address: EURC_CONTRACT,
     abi: ERC20_ABI,
     functionName: "decimals",
@@ -250,10 +257,18 @@ function Web3AppPageContent() {
   const { writeContract: writeContractClaim, data: claimHash, isPending: isClaiming } = useWriteContract();
   const { writeContract: writeContractRefund, data: refundHash, isPending: isRefunding } = useWriteContract();
 
-  // Note: USDC is native on ARC Testnet, so we can't check ERC20 allowance for it
-  // The contract may accept native USDC directly or require an ERC20 wrapper
-  // For now, we'll skip allowance check for USDC and handle it in the buy function
-  const allowance = null; // Disabled for native USDC
+  // USDC allowance check (for dmfUSD purchases)
+  const { data: usdcAllowance } = useReadContract({
+    address: USDC_CONTRACT,
+    abi: ERC20_ABI,
+    functionName: "allowance",
+    args: address && dmfUSD_CONTRACT ? [address, dmfUSD_CONTRACT] : undefined,
+    query: { 
+      enabled: !!address && !!dmfUSD_CONTRACT && isConnected && activeAction === 'Buy', 
+      refetchInterval: isConnected && activeAction === 'Buy' ? 30000 : false,
+      staleTime: 20 * 1000,
+    },
+  });
   
   // EURC allowance check (for dmfEUR purchases)
   const { data: eurcAllowance } = useReadContract({
@@ -278,11 +293,10 @@ function Web3AppPageContent() {
     await Promise.all([
       refetchPendingDividends(),
       refetchPendingDividendsGxaut(),
-      // USDC is native, no need to refetch separately
+      refetchUsdcBalance(),
       refetchGusdtBalance(),
       refetchXautBalance(),
       refetchGxautBalance(),
-      // Allowance check disabled for native USDC
     ]);
   };
 
@@ -294,10 +308,10 @@ function Web3AppPageContent() {
   };
 
   // Transaction receipts
-  const { isLoading: isConfirmingBuy, isSuccess: isBuySuccess, isError: isBuyError } = useWaitForTransactionReceipt({ hash: buyHash });
+  const { isLoading: isConfirmingBuy, isSuccess: isBuySuccess, isError: isBuyError, data: buyReceipt } = useWaitForTransactionReceipt({ hash: buyHash });
   const { isLoading: isConfirmingApprove, isSuccess: isApproveSuccess } = useWaitForTransactionReceipt({ hash: approveHash });
-  const { isLoading: isConfirmingClaim, isSuccess: isClaimSuccess, isError: isClaimError } = useWaitForTransactionReceipt({ hash: claimHash });
-  const { isLoading: isConfirmingRefund, isSuccess: isRefundSuccess, isError: isRefundError } = useWaitForTransactionReceipt({ hash: refundHash });
+  const { isLoading: isConfirmingClaim, isSuccess: isClaimSuccess, isError: isClaimError, data: claimReceipt } = useWaitForTransactionReceipt({ hash: claimHash });
+  const { isLoading: isConfirmingRefund, isSuccess: isRefundSuccess, isError: isRefundError, data: refundReceipt } = useWaitForTransactionReceipt({ hash: refundHash });
 
   // Auto-buy after approval is confirmed
   useEffect(() => {
@@ -312,33 +326,22 @@ function Web3AppPageContent() {
 
       if (token === 'dmfUSD') {
         contractAddress = dmfUSD_CONTRACT;
-        backingTokenDecimals = typeof usdtDecimals === 'number' ? usdtDecimals : 6;
+        backingTokenDecimals = typeof usdcDecimals === 'number' ? usdcDecimals : 6;
       } else {
         contractAddress = dmfEUR_CONTRACT;
-        backingTokenDecimals = typeof usdcDecimals === 'number' ? usdcDecimals : 6;
+        backingTokenDecimals = typeof eurcDecimals === 'number' ? eurcDecimals : 6;
       }
       
-      // Auto-trigger buy transaction after approval
+      // Auto-trigger buy transaction after approval (both use ERC-20 tokens now)
       const tokenAmount = parseUnits(buyAmount, backingTokenDecimals);
-      if (token === 'dmfUSD') {
-        // Native USDC for dmfUSD
-        writeContractBuy({
-          address: contractAddress,
-          abi: dmfUSD_ABI,
-          functionName: "buy",
-          value: tokenAmount,
-        });
-      } else {
-        // ERC20 EURC for dmfEUR
-        writeContractBuy({
-          address: contractAddress,
-          abi: dmfUSD_ABI,
-          functionName: "buy",
-          args: [tokenAmount],
-        });
-      }
+      writeContractBuy({
+        address: contractAddress,
+        abi: dmfUSD_ABI,
+        functionName: "buy",
+        args: [tokenAmount],
+      });
     }
-  }, [isApproveSuccess, approveHash, isConfirmingBuy, isBuying, writeContractBuy, activeBuyTab, selectedBuyToken, usdtDecimals, usdcDecimals]);
+  }, [isApproveSuccess, approveHash, isConfirmingBuy, isBuying, writeContractBuy, activeBuyTab, selectedBuyToken, usdcDecimals, eurcDecimals]);
 
   // Refetch balances 2 seconds after transaction success confirmation
   useEffect(() => {
@@ -508,23 +511,43 @@ function Web3AppPageContent() {
 
     if (token === 'dmfUSD') {
       contractAddress = dmfUSD_CONTRACT;
-      // USDC is native on ARC, but contract may need ERC20 USDC
-      // For now, we'll try to use native USDC (contract should handle it)
-      // USDC is native on ARC, but contract may need ERC20 USDC
-      // For now, we'll try to use native USDC (contract should handle it)
-      backingTokenAddress = USDC_CONTRACT; // This is zero address, will need ERC20 USDC address // This is zero address, will need ERC20 USDC address
-      backingTokenDecimals = 18; // Native USDC uses 18 decimals on ARC
+      backingTokenAddress = USDC_CONTRACT; // ERC-20 USDC contract address
+      backingTokenDecimals = typeof usdcDecimals === 'number' ? usdcDecimals : 6;
     } else {
       contractAddress = dmfEUR_CONTRACT;
       backingTokenAddress = EURC_CONTRACT; // Use EURC contract address
-      backingTokenDecimals = typeof usdcDecimals === 'number' ? usdcDecimals : 6;
+      backingTokenDecimals = typeof eurcDecimals === 'number' ? eurcDecimals : 6;
     }
 
     const tokenAmount = parseUnits(buyAmount, backingTokenDecimals);
 
     try {
-      // For dmfEUR (EURC), check allowance first
-      if (token === 'dmfEUR') {
+      // For both dmfUSD and dmfEUR, check allowance first
+      if (token === 'dmfUSD') {
+        const allowanceValue = (typeof usdcAllowance === 'bigint' ? usdcAllowance : 0n);
+        if (allowanceValue >= tokenAmount) {
+          // Buy directly if already approved
+          await writeContractBuy({
+            address: contractAddress,
+            abi: dmfUSD_ABI,
+            functionName: "buy",
+            args: [tokenAmount],
+          });
+          return;
+        }
+        
+        // Store the buy amount and contract to auto-buy after approval
+        pendingBuyAmountRef.current = buyAmount;
+        
+        // Approve USDC first - buy will be triggered automatically after approval succeeds
+        await writeContractApprove({
+          address: backingTokenAddress,
+          abi: ERC20_ABI,
+          functionName: "approve",
+          args: [contractAddress, tokenAmount],
+        });
+        return;
+      } else if (token === 'dmfEUR') {
         const allowanceValue = (typeof eurcAllowance === 'bigint' ? eurcAllowance : 0n);
         if (allowanceValue >= tokenAmount) {
           // Buy directly if already approved
@@ -549,15 +572,6 @@ function Web3AppPageContent() {
         });
         return;
       }
-      
-      // For dmfUSD (USDC): USDC is native on ARC Testnet
-      // Send native USDC via msg.value
-      await writeContractBuy({
-        address: contractAddress,
-        abi: dmfUSD_ABI,
-        functionName: "buy",
-        value: tokenAmount, // Native USDC sent via msg.value
-      });
     } catch (error: any) {
       console.error("Buy error:", error);
       pendingBuyAmountRef.current = null; // Reset on error
@@ -607,8 +621,8 @@ function Web3AppPageContent() {
       setTxStatus(prev => ({ ...prev, claim: 'failed' }));
       // Clear activeTransactionType after 2 seconds
       setTimeout(() => {
-        setActiveTransactionType(null);
-        setActiveClaimToken(null);
+      setActiveTransactionType(null);
+      setActiveClaimToken(null);
         setTxStatus(prev => ({ ...prev, claim: null }));
       }, 2000);
     }
@@ -655,9 +669,9 @@ function Web3AppPageContent() {
     }
   };
 
-  // USDC is native on ARC Testnet, use ethBalance (native balance)
-  const usdtBalanceFormatted = (ethBalance?.value && typeof ethBalance.value === 'bigint')
-    ? formatUnits(ethBalance.value, 18) // Native USDC uses 18 decimals on ARC
+  // ERC-20 USDC balance (6 decimals)
+  const usdtBalanceFormatted = (usdcBalance && typeof usdcBalance === 'bigint')
+    ? formatUnits(usdcBalance, typeof usdcDecimals === 'number' ? usdcDecimals : 6)
     : "0";
   const gusdtBalanceFormatted = (typeof gusdtBalance === 'bigint')
     ? formatUnits(gusdtBalance, 6)
@@ -679,9 +693,9 @@ function Web3AppPageContent() {
     ? formatUnits((gxautBalance * backingPerTokenGxaut) / BigInt(1e6), 6)
     : "0";
 
-  // Format EURC (USDC) and dmfEUR balances
-  const xautBalanceFormatted = (typeof xautBalance === 'bigint' && typeof usdcDecimals === 'number')
-    ? formatUnits(xautBalance, usdcDecimals)
+  // Format EURC and dmfEUR balances
+  const xautBalanceFormatted = (typeof xautBalance === 'bigint' && typeof eurcDecimals === 'number')
+    ? formatUnits(xautBalance, eurcDecimals)
     : "0";
   const gxautBalanceFormatted = (typeof gxautBalance === 'bigint')
     ? formatUnits(gxautBalance, 6)
@@ -691,12 +705,15 @@ function Web3AppPageContent() {
   const needsApproval = (() => {
     if (!buyAmount) return true;
     const token = selectedBuyToken || activeBuyTab;
-    if (token === 'dmfEUR') {
+    const decimals = typeof usdcDecimals === 'number' ? usdcDecimals : 6;
+    if (token === 'dmfUSD') {
+      // Check USDC allowance
+      return !(typeof usdcAllowance === 'bigint' && usdcAllowance >= parseUnits(buyAmount, decimals));
+    } else if (token === 'dmfEUR') {
       // Check EURC allowance
-      return !(typeof eurcAllowance === 'bigint' && eurcAllowance >= parseUnits(buyAmount, typeof usdcDecimals === 'number' ? usdcDecimals : 6));
+      return !(typeof eurcAllowance === 'bigint' && eurcAllowance >= parseUnits(buyAmount, decimals));
     }
-    // For dmfUSD (USDC native), no approval needed - native transfers don't require approval
-    return false;
+    return true;
   })();
 
   const isAwaitingBuy = isApproveSuccess && isConfirmingBuy;
@@ -716,11 +733,18 @@ function Web3AppPageContent() {
   });
 
   // Track transaction status with 1-2 second delay
+  // Only show success when transaction receipt confirms success on blockchain
   useEffect(() => {
-    if (isBuySuccess && buyHash) {
+    // Only set success if: receipt exists, status is success, and transaction is confirmed
+    if (isBuySuccess && buyHash && buyReceipt && buyReceipt.status === 'success') {
       // Wait 1-2 seconds before showing success status
       const timeoutId = setTimeout(() => {
         setTxStatus(prev => ({ ...prev, buy: 'success' }));
+        // Clear success status after 2 seconds of display
+        setTimeout(() => {
+          setTxStatus(prev => ({ ...prev, buy: null }));
+          setActiveTransactionType(null);
+        }, 2000);
       }, 1500);
       return () => clearTimeout(timeoutId);
     } else if (isBuyError && buyHash) {
@@ -736,12 +760,19 @@ function Web3AppPageContent() {
       }, 2000);
       return () => clearTimeout(timeoutId);
     }
-  }, [isBuySuccess, isBuyError, buyHash]);
+  }, [isBuySuccess, isBuyError, buyHash, buyReceipt]);
 
   useEffect(() => {
-    if (isClaimSuccess && claimHash) {
+    // Only set success if: receipt exists, status is success, and transaction is confirmed
+    if (isClaimSuccess && claimHash && claimReceipt && claimReceipt.status === 'success') {
       const timeoutId = setTimeout(() => {
         setTxStatus(prev => ({ ...prev, claim: 'success' }));
+        // Clear success status after 2 seconds of display
+        setTimeout(() => {
+          setTxStatus(prev => ({ ...prev, claim: null }));
+          setActiveTransactionType(null);
+          setActiveClaimToken(null);
+        }, 2000);
       }, 1500);
       return () => clearTimeout(timeoutId);
     } else if (isClaimError && claimHash) {
@@ -755,12 +786,18 @@ function Web3AppPageContent() {
       }, 2000);
       return () => clearTimeout(timeoutId);
     }
-  }, [isClaimSuccess, isClaimError, claimHash]);
+  }, [isClaimSuccess, isClaimError, claimHash, claimReceipt]);
 
   useEffect(() => {
-    if (isRefundSuccess && refundHash) {
+    // Only set success if: receipt exists, status is success, and transaction is confirmed
+    if (isRefundSuccess && refundHash && refundReceipt && refundReceipt.status === 'success') {
       const timeoutId = setTimeout(() => {
         setTxStatus(prev => ({ ...prev, refund: 'success' }));
+        // Clear success status after 2 seconds of display
+        setTimeout(() => {
+          setTxStatus(prev => ({ ...prev, refund: null }));
+          setActiveTransactionType(null);
+        }, 2000);
       }, 1500);
       return () => clearTimeout(timeoutId);
     } else if (isRefundError && refundHash) {
@@ -776,18 +813,42 @@ function Web3AppPageContent() {
       }, 2000);
       return () => clearTimeout(timeoutId);
     }
-  }, [isRefundSuccess, isRefundError, refundHash]);
+  }, [isRefundSuccess, isRefundError, refundHash, refundReceipt]);
 
-  // Reset active transaction type when transaction completes
+  // Reset transaction status when switching between actions
   useEffect(() => {
-    if ((isBuySuccess || isRefundSuccess || isClaimSuccess) && activeTransactionType) {
-      const timer = setTimeout(() => {
-        setActiveTransactionType(null);
-        setActiveClaimToken(null);
-      }, 2500);
-      return () => clearTimeout(timer);
+    // Clear all transaction statuses when switching actions
+    setTxStatus({ buy: null, claim: null, refund: null });
+    setActiveTransactionType(null);
+    setActiveClaimToken(null);
+  }, [activeAction]);
+
+  // Reset transaction status when new transaction starts (hash changes)
+  useEffect(() => {
+    if (buyHash) {
+      // Clear any old success status when starting a new buy transaction
+      setTxStatus(prev => ({ ...prev, buy: 'pending' }));
+    } else if (!buyHash && !isConfirmingBuy && !isBuying) {
+      // Clear status when hash is cleared and no transaction is in progress
+      setTxStatus(prev => ({ ...prev, buy: null }));
     }
-  }, [isBuySuccess, isRefundSuccess, isClaimSuccess, activeTransactionType]);
+  }, [buyHash, isConfirmingBuy, isBuying]);
+
+  useEffect(() => {
+    if (claimHash) {
+      setTxStatus(prev => ({ ...prev, claim: 'pending' }));
+    } else if (!claimHash && !isConfirmingClaim && !isClaiming) {
+      setTxStatus(prev => ({ ...prev, claim: null }));
+    }
+  }, [claimHash, isConfirmingClaim, isClaiming]);
+
+  useEffect(() => {
+    if (refundHash) {
+      setTxStatus(prev => ({ ...prev, refund: 'pending' }));
+    } else if (!refundHash && !isConfirmingRefund && !isRefunding) {
+      setTxStatus(prev => ({ ...prev, refund: null }));
+    }
+  }, [refundHash, isConfirmingRefund, isRefunding]);
 
   // Detect user cancellation: when isPending becomes false without a hash
   useEffect(() => {
@@ -1029,7 +1090,7 @@ function Web3AppPageContent() {
                 className={`p-4 rounded-xl shadow-md transition-all ${
                   activeAction === 'dTokens'
                     ? 'bg-blue-600 text-white shadow-lg scale-105'
-                    : 'bg-white text-gray-700 hover:bg-gray-50'
+                    : 'bg-white text-gray-700 hover:bg-blue-50'
                 }`}
               >
                 <Coins className="h-6 w-6 mx-auto mb-2" />
@@ -1040,7 +1101,7 @@ function Web3AppPageContent() {
                 className={`p-4 rounded-xl shadow-md transition-all ${
                   activeAction === 'Buy'
                     ? 'bg-blue-600 text-white shadow-lg scale-105'
-                    : 'bg-white text-gray-700 hover:bg-gray-50'
+                    : 'bg-white text-gray-700 hover:bg-blue-50'
                 }`}
               >
                 <ShoppingCart className="h-6 w-6 mx-auto mb-2" />
@@ -1051,7 +1112,7 @@ function Web3AppPageContent() {
                 className={`p-4 rounded-xl shadow-md transition-all ${
                   activeAction === 'Interest'
                     ? 'bg-blue-600 text-white shadow-lg scale-105'
-                    : 'bg-white text-gray-700 hover:bg-gray-50'
+                    : 'bg-white text-gray-700 hover:bg-blue-50'
                 }`}
               >
                 <BarChart4 className="h-6 w-6 mx-auto mb-2" />
@@ -1062,7 +1123,7 @@ function Web3AppPageContent() {
                 className={`p-4 rounded-xl shadow-md transition-all ${
                   activeAction === 'Refund'
                     ? 'bg-blue-600 text-white shadow-lg scale-105'
-                    : 'bg-white text-gray-700 hover:bg-gray-50'
+                    : 'bg-white text-gray-700 hover:bg-blue-50'
                 }`}
               >
                 <RotateCcw className="h-6 w-6 mx-auto mb-2" />
@@ -1073,7 +1134,7 @@ function Web3AppPageContent() {
                 className={`p-4 rounded-xl shadow-md transition-all col-span-2 ${
                   activeAction === 'Faucet'
                     ? 'bg-green-600 text-white shadow-lg scale-105'
-                    : 'bg-white text-gray-700 hover:bg-gray-50'
+                    : 'bg-white text-gray-700 hover:bg-blue-50'
                 }`}
               >
                 <Wallet className="h-6 w-6 mx-auto mb-2" />

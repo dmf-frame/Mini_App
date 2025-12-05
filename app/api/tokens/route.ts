@@ -242,11 +242,13 @@ async function getTokenData(contractAddress: string, reserveContractAddress: str
 
         // Sum up Buy volume (usdcPaid/eurcPaid)
         let buyVolume = BigInt(0);
-        for (const event of buyEvents as any[]) {
-          if (event.args) {
+        for (const event of buyEvents) {
+          // Type assertion: viem getLogs with event parameter should decode args
+          const eventWithArgs = event as typeof event & { args?: any };
+          if (eventWithArgs.args) {
             // Buy event structure: Buy(address indexed buyer, uint256 usdcPaid/eurcPaid, uint256 tokensReceived)
             // viem returns args as an object with named properties or as an array
-            const paidAmount = (event.args as any).usdcPaid || (event.args as any).eurcPaid || (Array.isArray(event.args) ? event.args[1] : undefined);
+            const paidAmount = (eventWithArgs.args as any).usdcPaid || (eventWithArgs.args as any).eurcPaid || (Array.isArray(eventWithArgs.args) ? eventWithArgs.args[1] : undefined);
             if (paidAmount && typeof paidAmount === 'bigint') {
               buyVolume += paidAmount;
             }
@@ -360,5 +362,4 @@ export async function GET(request: Request) {
     cached: false,
   });
 }
-
 
